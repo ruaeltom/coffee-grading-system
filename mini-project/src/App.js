@@ -283,11 +283,13 @@ function GradeSection() {
     try {
       const fd = new FormData();
       fd.append('image', imageFile);
-      const res = await fetch('/predict', { method: 'POST', body: fd });
+      const res = await fetch('http://localhost:5000/predict', { method: 'POST', body: fd });
       const data = await res.json();
       if (data.error) { setError(data.error); return; }
+      // Use grade from backend (derived from CNN label) — fallback to gradeMap if older backend
+      const grade = data.grade || gradeMap[data.class] || 'D';
       setResult({
-        label: data.class, grade: gradeMap[data.class],
+        label: data.class, grade,
         pricePerKg: data.price_per_kg, daysToDry: data.drying_days,
         recommendation: data.recommendation,
         originalImg: data.original_image, claheImg: data.clahe_image,

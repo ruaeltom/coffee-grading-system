@@ -1,9 +1,12 @@
+
 import base64
 import cv2
 import numpy as np
 
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
+app = Flask(__name__)
+CORS(app)
 import tensorflow as tf
 import numpy as np
 from PIL import Image
@@ -143,6 +146,52 @@ DRYING_INFO = {
 }
 
 
+def is_likely_coffee(image_np):
+    """
+    Lightweight sanity check — only rejects images that are OBVIOUSLY not coffee.
+    Coffee cherries at ALL drying stages (fresh red, medium brown, dark dried) are ACCEPTED.
+    Heavy validation is handled by Gemini AI.
+    
+    Rejects:
+    - Mostly blue images (screenshots, sky, ocean, text documents)
+    - Extremely bright/white images (blank pages, white backgrounds)
+    - Highly uniform single-color images (solid backgrounds, graphics)
+    """
+    hsv = cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV).astype(np.float32)
+    h, s, v = hsv[:,:,0], hsv[:,:,1], hsv[:,:,2]
+    total_pixels = image_np.shape[0] * image_np.shape[1]
+
+    # ── REJECT: Mostly BLUE image (screenshots, sky, documents) ──────
+    # Blue hue in OpenCV HSV: h approximately 100-130
+    blue_mask = (h >= 95) & (h <= 135) & (s > 60) & (v > 60)
+    blue_ratio = np.sum(blue_mask) / total_pixels
+    print(f"DEBUG: Blue pixel ratio: {blue_ratio:.2f}")
+    if blue_ratio > 0.40:
+        print("DEBUG: REJECTED — image is mostly blue (screenshot/document/sky).")
+        return False
+
+    # ── REJECT: Mostly BRIGHT WHITE image ────────────────────────────
+    white_mask = (v > 220) & (s < 40)
+    white_ratio = np.sum(white_mask) / total_pixels
+    print(f"DEBUG: White pixel ratio: {white_ratio:.2f}")
+    if white_ratio > 0.60:
+        print("DEBUG: REJECTED — image is mostly white (blank page/white background).")
+        return False
+
+    # ── REJECT: Highly uniform image (solid color graphic / screenshot)
+    # Real coffee images have high variance in hue and value
+    v_std = float(np.std(v))
+    s_std = float(np.std(s))
+    print(f"DEBUG: Value std={v_std:.1f}, Sat std={s_std:.1f}")
+    if v_std < 15 and s_std < 10:
+        print("DEBUG: REJECTED — image is too uniform (solid color graphic).")
+        return False
+
+    # Everything else: ACCEPT and let Gemini do proper validation
+    print("DEBUG: Local pre-check PASSED — forwarding to Gemini for validation.")
+    return True
+
+
 def preprocess_image(image_bytes):
     original_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     original_img = original_img.resize((224, 224))
@@ -172,10 +221,27 @@ def predict():
     # Preprocess with CLAHE
     img, original_np, clahe_np = preprocess_image(image_bytes)
 
+    # --- LOCAL PRE-CHECK (fast, before CNN & Gemini) ---
+    if not is_likely_coffee(original_np):
+        print("DEBUG: Local color pre-check REJECTED the image immediately.")
+        return jsonify({"error": "Sorry, wrong image! Please upload a photo of coffee fruits or cherries."}), 400
+    print("DEBUG: Local color pre-check PASSED.")
+
     # --- Run Local Classification Model ---
     prediction = model.predict(img)
     class_index = np.argmax(prediction)
+    # label is ALWAYS derived from the CNN model. Gemini must NOT override this.
     label = CLASS_NAMES[class_index]
+    print(f"DEBUG: CNN classified image as: '{label}'")
+
+    # Grade is ALWAYS derived from the CNN label — this mapping is fixed
+    grade_map = {
+        "Fully_dried": "A",
+        "Partially_dried": "B",
+        "Mixed": "C",
+        "Fresh": "D"
+    }
+    grade = grade_map.get(label, "D")
 
     # Set Default Values (Dataset)
     price_per_kg = PRICE_MAP[label]
@@ -192,29 +258,36 @@ def predict():
             pil_image = Image.fromarray(original_np)
             
             combined_prompt = f"""
-            Task: Analyze this image for a coffee fruit grading application.
+            Task: Validate and enrich data for a coffee fruit grading application.
             
-            Step 1: VALIDATION
-            - ONLY accept images that clearly show coffee fruits, coffee cherries, or coffee beans.
+            CRITICAL RULE: DO NOT reclassify the image. The CNN model has already determined 
+            the classification as '{label}'. You must accept this as final.
+            
+            Step 1: VALIDATION ONLY
+            - Check if this image clearly shows coffee fruits, coffee cherries, or coffee beans.
             - Reject EVERYTHING else: people, animals, objects, food, screenshots, documents, landscapes, etc.
             - When in doubt, mark as INVALID.
+            - IMPORTANT: Even if the cherries appear fresh/ripe/dried to you, do NOT change the 
+              CNN's classification of '{label}'. Only validate it IS a coffee image.
             
-            Step 2: ANALYSIS (Only if Valid)
-            - The local model classified this as: '{label}'.
-            - Base your analysis on this and the visual appearance.
-            - **Price**: Provide a SINGLE, EXACT number (e.g., 185) for 'price_per_kg' based on Indian market rates.
-            - **Recommendation**: Provide a DETAILED, step-by-step drying guide specific to the fruit's condition.
+            Step 2: ENRICHMENT (Only if Valid Coffee Image)
+            - The CNN model has classified this as '{label}'. ACCEPT this as the final classification.
+            - Provide price and recommendation SPECIFIC to the '{label}' stage:
+              - Fresh = low price (~60/kg), needs 15-25 days drying
+              - Mixed = medium-low price (~75/kg), needs 7-12 days more
+              - Partially_dried = medium-high price (~135/kg), needs 3-6 more days
+              - Fully_dried = premium price (~195/kg), ready for market
             
             Return ONLY a JSON object, no extra text:
-            If INVALID: 
+            If INVALID (not a coffee image): 
             {{ "is_coffee": false }}
             
-            If VALID:
+            If VALID (is a coffee image):
             {{
                 "is_coffee": true,
-                "price_per_kg": <number>,
-                "drying_days": "<string e.g. 3-5 days>",
-                "recommendation": "<string long text>",
+                "price_per_kg": <number matching '{label}' stage>,
+                "drying_days": "<string matching '{label}' stage>",
+                "recommendation": "<detailed step-by-step guide for '{label}' stage>",
                 "min_price": <number>,
                 "max_price": <number>
             }}
@@ -242,28 +315,28 @@ def predict():
             max_price = data.get("max_price", max_price)
             
         except Exception as e:
-            # Gemini API failed (quota/network) — fall back to local model silently
-            print(f"Gemini API Error (using local model as fallback): {e}")
+            # Gemini API failed (quota/network) — DO NOT silently fall through.
+            # Run local color check as safety net before allowing the result.
+            print(f"Gemini API Error: {e}")
+            if not is_likely_coffee(original_np):
+                print("Local color check REJECTED the image (Gemini was unavailable).")
+                return jsonify({"error": "Sorry, wrong image! Please upload a photo of coffee fruits or cherries."}), 400
+            print("Local color check passed — proceeding with CNN result as fallback.")
 
     try:
         conn = get_db_connection()
-        grade_map = {
-            "Fully_dried": "A",
-            "Partially_dried": "B",
-            "Mixed": "C",
-            "Fresh": "D"
-        }
         conn.execute('''
             INSERT INTO history (timestamp, class_name, price_per_kg, drying_days, recommendation, grade)
             VALUES (?, ?, ?, ?, ?, ?)
-        ''', (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), label, price_per_kg, drying_days, recommendation, grade_map.get(label, "Unknown")))
+        ''', (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), label, price_per_kg, drying_days, recommendation, grade))
         conn.commit()
         conn.close()
     except Exception as e:
         print(f"Database Error: {e}")
 
     response = {
-        "class": label,
+        "class": label,       # ALWAYS the CNN model's classification
+        "grade": grade,        # ALWAYS derived from CNN label: Fresh=D, Mixed=C, Partially_dried=B, Fully_dried=A
         "price_per_kg": price_per_kg,
         "drying_days": drying_days,
         "recommendation": recommendation,
@@ -272,6 +345,7 @@ def predict():
         "original_image": encode_image(original_np),
         "clahe_image": encode_image(clahe_np)
     }
+    print(f"DEBUG: Final response -> class='{label}', grade='{grade}', price={price_per_kg}")
 
     return jsonify(response)
 
@@ -291,5 +365,5 @@ def get_history():
 
 if __name__ == "__main__":
     init_db()
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=5000)
 
