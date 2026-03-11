@@ -1,0 +1,8 @@
+**/node_modules
+**/__pycache__
+**/.git
+backend/tf_env
+mini-project/build
+.vscode
+.env
+*.db
