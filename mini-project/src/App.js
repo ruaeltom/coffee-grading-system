@@ -320,6 +320,42 @@ function GradeSection() {
             Upload a photo of your coffee fruits and our AI will analyze the color
             distribution to determine the dryness level and quality grade.
           </p>
+          <div style={{
+            marginTop: 20, padding: '8px 16px', borderRadius: 8,
+            border: '1px solid rgba(239,68,68,0.3)', background: 'rgba(239,68,68,0.1)',
+            display: 'inline-flex', alignItems: 'center', gap: 8, color: '#f87171',
+            fontSize: 13, fontWeight: 600
+          }}>
+            <AlertIcon size={16} /> IMPORTANT: Please upload ONLY images of coffee cherries or beans.
+          </div>
+        </div>
+
+        {/* Example Gallery */}
+        <div style={{ marginBottom: 40 }}>
+          <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 16, textAlign: 'center' }}>
+            Grading Reference Examples
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+            {[
+              { id: 'A', label: 'Grade A', sub: 'Fully Dried', img: '/examples/dried.jpg' },
+              { id: 'B', label: 'Grade B', sub: 'Well Dried', img: '/examples/partial.jpg' },
+              { id: 'C', label: 'Grade C', sub: 'Mixed Batch', img: '/examples/mixed.jpg' },
+              { id: 'D', label: 'Grade D', sub: 'Fresh Cherry', img: '/examples/fresh.jpg' },
+            ].map(ex => (
+              <div key={ex.id} style={{
+                background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)',
+                borderRadius: 12, overflow: 'hidden', textAlign: 'center'
+              }}>
+                <div style={{ height: 80, overflow: 'hidden', background: '#000' }}>
+                  <img src={ex.img} alt={ex.label} style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.8 }} />
+                </div>
+                <div style={{ padding: '8px 4px' }}>
+                  <div style={{ color: GRADE_CONFIG[ex.id].bg, fontWeight: 800, fontSize: 13 }}>{ex.label}</div>
+                  <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 10 }}>{ex.sub}</div>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
 
         {/* Drop zone */}
